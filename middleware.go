@@ -310,8 +310,7 @@ func activeAttributes(c *echo.Context) []attribute.KeyValue {
 func responseStatus(response *echo.Response, err error) int {
 	status := response.Status
 	if err != nil && !response.Committed {
-		var httpError *echo.HTTPError
-		if errors.As(err, &httpError) {
+		if httpError, ok := errors.AsType[*echo.HTTPError](err); ok {
 			return httpError.Code
 		}
 
