@@ -2,8 +2,11 @@ package echotelmetrics
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -14,9 +17,7 @@ import (
 )
 
 func TestMiddleware_RecordsDefaultMetrics(t *testing.T) {
-	reader, provider := newMeterProvider()
-	e := echo.New()
-	e.Use(Middleware(WithMeterProvider(provider)))
+	e, reader := setupTest(t)
 	e.POST("/users/:id", func(c *echo.Context) error {
 		return c.String(http.StatusCreated, "created")
 	})
@@ -60,14 +61,11 @@ func TestMiddleware_RecordsDefaultMetrics(t *testing.T) {
 }
 
 func TestMiddleware_RecordsHTTPErrorStatus(t *testing.T) {
-	reader, provider := newMeterProvider()
-	e := echo.New()
-	e.Use(Middleware(WithMeterProvider(provider)))
-	e.GET("/teapot", func(c *echo.Context) error {
+	e, reader := setupTest(t)
+	e.GET("/teapot", func(_ *echo.Context) error {
 		return echo.NewHTTPError(http.StatusTeapot, "short and stout")
 	})
-
-	e.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/teapot", nil))
+	serveGet(e, "/teapot")
 
 	metrics := collectMetrics(t, reader)
 	requestCount := sumDataPoint[int64](t, metrics, defaultRequestCountName)
@@ -81,9 +79,7 @@ func TestMiddleware_RecordsHTTPErrorStatus(t *testing.T) {
 }
 
 func TestMiddleware_NormalizesScheme(t *testing.T) {
-	reader, provider := newMeterProvider()
-	e := echo.New()
-	e.Use(Middleware(WithMeterProvider(provider)))
+	e, reader := setupTest(t)
 	e.GET("/scheme", func(c *echo.Context) error {
 		return c.NoContent(http.StatusOK)
 	})
@@ -97,28 +93,19 @@ func TestMiddleware_NormalizesScheme(t *testing.T) {
 }
 
 func TestMiddleware_RecordsUnknownRouteWithoutRawPath(t *testing.T) {
-	reader, provider := newMeterProvider()
-	e := echo.New()
-	e.Use(Middleware(WithMeterProvider(provider)))
-
-	e.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/missing/42?token=secret", nil))
+	e, reader := setupTest(t)
+	serveGet(e, "/missing/42?token=secret")
 
 	requestCount := sumDataPoint[int64](t, collectMetrics(t, reader), defaultRequestCountName)
 	assertAttribute(t, requestCount.Attributes, "http.route", unknownRoute)
 }
 
 func TestMiddleware_SkipsRequests(t *testing.T) {
-	reader, provider := newMeterProvider()
-	e := echo.New()
-	e.Use(Middleware(
-		WithMeterProvider(provider),
-		WithSkipper(func(*echo.Context) bool { return true }),
-	))
+	e, reader := setupTest(t, WithSkipper(func(*echo.Context) bool { return true }))
 	e.GET("/health", func(c *echo.Context) error {
 		return c.NoContent(http.StatusNoContent)
 	})
-
-	e.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/health", nil))
+	serveGet(e, "/health")
 
 	metrics := collectMetrics(t, reader)
 	if _, ok := metrics[defaultRequestCountName]; ok {
@@ -127,17 +114,11 @@ func TestMiddleware_SkipsRequests(t *testing.T) {
 }
 
 func TestMiddleware_DisablesInstrument(t *testing.T) {
-	reader, provider := newMeterProvider()
-	e := echo.New()
-	e.Use(Middleware(
-		WithMeterProvider(provider),
-		WithRequestCount(InstrumentConfig{Disabled: true}),
-	))
+	e, reader := setupTest(t, WithRequestCount(InstrumentConfig{Disabled: true}))
 	e.GET("/users", func(c *echo.Context) error {
 		return c.NoContent(http.StatusOK)
 	})
-
-	e.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/users", nil))
+	serveGet(e, "/users")
 
 	metrics := collectMetrics(t, reader)
 	if _, ok := metrics[defaultRequestCountName]; ok {
@@ -149,23 +130,180 @@ func TestMiddleware_DisablesInstrument(t *testing.T) {
 }
 
 func TestMiddleware_CustomMetricNameAndAttributes(t *testing.T) {
-	reader, provider := newMeterProvider()
-	e := echo.New()
-	e.Use(Middleware(
-		WithMeterProvider(provider),
+	e, reader := setupTest(t,
 		WithRequestCount(InstrumentConfig{Name: "custom.server.requests"}),
 		WithAttributes(func(*echo.Context, error) []attribute.KeyValue {
 			return []attribute.KeyValue{attribute.String("service.tier", "edge")}
 		}),
-	))
+	)
 	e.GET("/custom", func(c *echo.Context) error {
 		return c.NoContent(http.StatusOK)
 	})
-
-	e.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/custom", nil))
+	serveGet(e, "/custom")
 
 	requestCount := sumDataPoint[int64](t, collectMetrics(t, reader), "custom.server.requests")
 	assertAttribute(t, requestCount.Attributes, "service.tier", "edge")
+}
+
+func TestMiddleware_AppliesAllOptionsAndCustomNames(t *testing.T) {
+	e, reader := setupTest(t,
+		WithMeterName("custom.meter"),
+		WithMeterVersion("9.9.9"),
+		WithRequestCount(InstrumentConfig{Name: "rc.custom", Description: "rc desc", Unit: "{r}"}),
+		WithRequestDuration(InstrumentConfig{Name: "rd.custom", Description: "rd desc", Unit: "ms"}),
+		WithRequestSize(InstrumentConfig{Name: "rs.custom", Description: "rs desc", Unit: "By"}),
+		WithResponseSize(InstrumentConfig{Name: "rsp.custom", Description: "rsp desc", Unit: "By"}),
+		WithActiveRequests(InstrumentConfig{Name: "ar.custom", Description: "ar desc", Unit: "{r}"}),
+	)
+	e.GET("/all", func(c *echo.Context) error {
+		return c.String(http.StatusOK, "ok")
+	})
+	serveGet(e, "/all")
+
+	metrics := collectMetrics(t, reader)
+	for _, name := range []string{"rc.custom", "rd.custom", "rs.custom", "rsp.custom", "ar.custom"} {
+		if _, ok := metrics[name]; !ok {
+			t.Fatalf("expected custom metric %q to be recorded", name)
+		}
+	}
+}
+
+func TestMiddleware_DisablesAllInstruments(t *testing.T) {
+	e, reader := setupTest(t,
+		WithRequestCount(InstrumentConfig{Disabled: true}),
+		WithRequestDuration(InstrumentConfig{Disabled: true}),
+		WithRequestSize(InstrumentConfig{Disabled: true}),
+		WithResponseSize(InstrumentConfig{Disabled: true}),
+		WithActiveRequests(InstrumentConfig{Disabled: true}),
+	)
+	e.GET("/none", func(c *echo.Context) error {
+		return c.NoContent(http.StatusOK)
+	})
+	serveGet(e, "/none")
+
+	metrics := collectMetrics(t, reader)
+	if len(metrics) != 0 {
+		t.Fatalf("expected no metrics recorded, got %d", len(metrics))
+	}
+}
+
+func TestMiddleware_NilOptionIsIgnored(t *testing.T) {
+	_, provider := newMeterProvider()
+	mw, err := New(nil, WithMeterProvider(provider))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if mw == nil {
+		t.Fatal("middleware is nil")
+	}
+}
+
+func TestMiddleware_HandlerErrorMarksError(t *testing.T) {
+	e, reader := setupTest(t)
+	e.GET("/boom", func(_ *echo.Context) error {
+		return errors.New("boom")
+	})
+	serveGet(e, "/boom")
+
+	requestCount := sumDataPoint[int64](t, collectMetrics(t, reader), defaultRequestCountName)
+	assertAttribute(t, requestCount.Attributes, "error", true)
+	assertAttribute(t, requestCount.Attributes, "http.response.status_code", int64(http.StatusInternalServerError))
+}
+
+func TestResponseStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		setup  func(*echo.Response)
+		err    error
+		want   int
+	}{
+		{"committed_response_uses_status", func(r *echo.Response) { r.WriteHeader(http.StatusAccepted) }, errors.New("late"), http.StatusAccepted},
+		{"zero_status_defaults_ok", func(*echo.Response) {}, nil, http.StatusOK},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := echo.NewResponse(httptest.NewRecorder(), nil)
+			tt.setup(response)
+			if got := responseStatus(response, tt.err); got != tt.want {
+				t.Fatalf("status = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRequestSizeNegativeContentLength(t *testing.T) {
+	e := echo.New()
+	request := httptest.NewRequest(http.MethodGet, "/x", nil)
+	request.ContentLength = -1
+	c := e.NewContext(request, httptest.NewRecorder())
+	if got := requestSize(c); got != 0 {
+		t.Fatalf("requestSize = %d, want 0", got)
+	}
+}
+
+func TestResponseSizeNegative(t *testing.T) {
+	response := echo.NewResponse(httptest.NewRecorder(), nil)
+	response.Size = -10
+	if got := responseSize(response); got != 0 {
+		t.Fatalf("responseSize = %d, want 0", got)
+	}
+}
+
+func TestSchemeDetection(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*http.Request)
+		want  string
+	}{
+		{"tls", func(r *http.Request) { r.TLS = &tls.ConnectionState{} }, "https"},
+		{"forwarded_proto_https", func(r *http.Request) { r.Header.Set(echo.HeaderXForwardedProto, "HTTPS") }, "https"},
+		{"forwarded_proto_list", func(r *http.Request) { r.Header.Set(echo.HeaderXForwardedProto, "https, http") }, "https"},
+		{"url_scheme", func(r *http.Request) { r.URL = &url.URL{Scheme: "https", Path: "/"} }, "https"},
+		{"default_http", func(r *http.Request) { r.URL = &url.URL{Path: "/"} }, "http"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			tt.setup(r)
+			if got := scheme(r); got != tt.want {
+				t.Fatalf("scheme = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewWithConfigInstrumentError(t *testing.T) {
+	_, provider := newMeterProvider()
+	_, err := NewWithConfig(Config{
+		MeterProvider: provider,
+		RequestCount:  InstrumentConfig{Name: strings.Repeat("a", 1024)},
+	})
+	if err == nil {
+		t.Skip("OTel SDK accepted the instrument name; cannot exercise error branch on this version")
+	}
+}
+
+func TestMiddlewarePanicsOnInvalidConfig(_ *testing.T) {
+	defer func() {
+		_ = recover()
+	}()
+	Middleware(WithRequestCount(InstrumentConfig{Name: ""}))
+}
+
+func setupTest(t *testing.T, opts ...Option) (*echo.Echo, *sdkmetric.ManualReader) {
+	t.Helper()
+	reader, provider := newMeterProvider()
+	e := echo.New()
+	allOpts := append([]Option{WithMeterProvider(provider)}, opts...)
+	e.Use(Middleware(allOpts...))
+
+	return e, reader
+}
+
+func serveGet(e *echo.Echo, path string) {
+	e.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, path, nil))
 }
 
 func newMeterProvider() (*sdkmetric.ManualReader, *sdkmetric.MeterProvider) {

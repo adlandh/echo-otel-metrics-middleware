@@ -3,3 +3,4 @@
 .opencode/
 openspec/changes
 .golangci.yml
+coverage.txt
