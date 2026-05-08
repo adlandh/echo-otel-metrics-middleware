@@ -62,7 +62,7 @@ func TestMiddleware_RecordsDefaultMetrics(t *testing.T) {
 
 func TestMiddleware_RecordsHTTPErrorStatus(t *testing.T) {
 	e, reader := setupTest(t)
-	e.GET("/teapot", func(c *echo.Context) error {
+	e.GET("/teapot", func(_ *echo.Context) error {
 		return echo.NewHTTPError(http.StatusTeapot, "short and stout")
 	})
 	serveGet(e, "/teapot")
@@ -200,7 +200,7 @@ func TestMiddleware_NilOptionIsIgnored(t *testing.T) {
 
 func TestMiddleware_HandlerErrorMarksError(t *testing.T) {
 	e, reader := setupTest(t)
-	e.GET("/boom", func(c *echo.Context) error {
+	e.GET("/boom", func(_ *echo.Context) error {
 		return errors.New("boom")
 	})
 	serveGet(e, "/boom")
