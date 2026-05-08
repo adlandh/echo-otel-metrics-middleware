@@ -285,6 +285,7 @@ func applyConfigDefaults(config Config) Config {
 	return config
 }
 
+// Mirrored in README.md — update the default-attributes table there when changing these values.
 func requestAttributes(c *echo.Context, status int, err error) []attribute.KeyValue {
 	r := c.Request()
 
