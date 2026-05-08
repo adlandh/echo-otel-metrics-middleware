@@ -7,6 +7,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
+// Mirrored in README.md — update the instrument table there when changing these values.
 const (
 	defaultMeterName    = "github.com/adlandh/echo-otel-metrics-middleware"
 	defaultMeterVersion = "0.1.0"
