@@ -285,7 +285,7 @@ func TestNewWithConfigInstrumentError(t *testing.T) {
 	}
 }
 
-func TestMiddlewarePanicsOnInvalidConfig(t *testing.T) {
+func TestMiddlewarePanicsOnInvalidConfig(_ *testing.T) {
 	defer func() {
 		_ = recover()
 	}()
