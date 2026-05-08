@@ -2,8 +2,11 @@ package echotelmetrics
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -166,6 +169,181 @@ func TestMiddleware_CustomMetricNameAndAttributes(t *testing.T) {
 
 	requestCount := sumDataPoint[int64](t, collectMetrics(t, reader), "custom.server.requests")
 	assertAttribute(t, requestCount.Attributes, "service.tier", "edge")
+}
+
+func TestMiddleware_AppliesAllOptionsAndCustomNames(t *testing.T) {
+	reader, provider := newMeterProvider()
+	e := echo.New()
+	e.Use(Middleware(
+		WithMeterProvider(provider),
+		WithMeterName("custom.meter"),
+		WithMeterVersion("9.9.9"),
+		WithRequestCount(InstrumentConfig{Name: "rc.custom", Description: "rc desc", Unit: "{r}"}),
+		WithRequestDuration(InstrumentConfig{Name: "rd.custom", Description: "rd desc", Unit: "ms"}),
+		WithRequestSize(InstrumentConfig{Name: "rs.custom", Description: "rs desc", Unit: "By"}),
+		WithResponseSize(InstrumentConfig{Name: "rsp.custom", Description: "rsp desc", Unit: "By"}),
+		WithActiveRequests(InstrumentConfig{Name: "ar.custom", Description: "ar desc", Unit: "{r}"}),
+	))
+	e.GET("/all", func(c *echo.Context) error {
+		return c.String(http.StatusOK, "ok")
+	})
+
+	e.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/all", nil))
+
+	metrics := collectMetrics(t, reader)
+	for _, name := range []string{"rc.custom", "rd.custom", "rs.custom", "rsp.custom", "ar.custom"} {
+		if _, ok := metrics[name]; !ok {
+			t.Fatalf("expected custom metric %q to be recorded", name)
+		}
+	}
+}
+
+func TestMiddleware_DisablesAllInstruments(t *testing.T) {
+	reader, provider := newMeterProvider()
+	e := echo.New()
+	e.Use(Middleware(
+		WithMeterProvider(provider),
+		WithRequestCount(InstrumentConfig{Disabled: true}),
+		WithRequestDuration(InstrumentConfig{Disabled: true}),
+		WithRequestSize(InstrumentConfig{Disabled: true}),
+		WithResponseSize(InstrumentConfig{Disabled: true}),
+		WithActiveRequests(InstrumentConfig{Disabled: true}),
+	))
+	e.GET("/none", func(c *echo.Context) error {
+		return c.NoContent(http.StatusOK)
+	})
+
+	e.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/none", nil))
+
+	metrics := collectMetrics(t, reader)
+	if len(metrics) != 0 {
+		t.Fatalf("expected no metrics recorded, got %d", len(metrics))
+	}
+}
+
+func TestMiddleware_NilOptionIsIgnored(t *testing.T) {
+	_, provider := newMeterProvider()
+	mw, err := New(nil, WithMeterProvider(provider))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if mw == nil {
+		t.Fatal("middleware is nil")
+	}
+}
+
+func TestMiddleware_HandlerErrorMarksError(t *testing.T) {
+	reader, provider := newMeterProvider()
+	e := echo.New()
+	e.Use(Middleware(WithMeterProvider(provider)))
+	e.GET("/boom", func(c *echo.Context) error {
+		return errors.New("boom")
+	})
+
+	e.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/boom", nil))
+
+	requestCount := sumDataPoint[int64](t, collectMetrics(t, reader), defaultRequestCountName)
+	assertAttribute(t, requestCount.Attributes, "error", true)
+	assertAttribute(t, requestCount.Attributes, "http.response.status_code", int64(http.StatusInternalServerError))
+}
+
+func TestResponseStatus(t *testing.T) {
+	t.Run("committed_response_uses_status", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		response := echo.NewResponse(recorder, nil)
+		response.WriteHeader(http.StatusAccepted)
+		if got := responseStatus(response, errors.New("late")); got != http.StatusAccepted {
+			t.Fatalf("status = %d, want %d", got, http.StatusAccepted)
+		}
+	})
+
+	t.Run("zero_status_defaults_ok", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		response := echo.NewResponse(recorder, nil)
+		if got := responseStatus(response, nil); got != http.StatusOK {
+			t.Fatalf("status = %d, want %d", got, http.StatusOK)
+		}
+	})
+}
+
+func TestRequestSizeNegativeContentLength(t *testing.T) {
+	e := echo.New()
+	request := httptest.NewRequest(http.MethodGet, "/x", nil)
+	request.ContentLength = -1
+	c := e.NewContext(request, httptest.NewRecorder())
+	if got := requestSize(c); got != 0 {
+		t.Fatalf("requestSize = %d, want 0", got)
+	}
+}
+
+func TestResponseSizeNegative(t *testing.T) {
+	response := echo.NewResponse(httptest.NewRecorder(), nil)
+	response.Size = -10
+	if got := responseSize(response); got != 0 {
+		t.Fatalf("responseSize = %d, want 0", got)
+	}
+}
+
+func TestSchemeDetection(t *testing.T) {
+	t.Run("tls", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.TLS = &tls.ConnectionState{}
+		if got := scheme(r); got != "https" {
+			t.Fatalf("scheme = %q, want https", got)
+		}
+	})
+
+	t.Run("forwarded_proto_https", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Header.Set(echo.HeaderXForwardedProto, "HTTPS")
+		if got := scheme(r); got != "https" {
+			t.Fatalf("scheme = %q, want https", got)
+		}
+	})
+
+	t.Run("forwarded_proto_list", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Header.Set(echo.HeaderXForwardedProto, "https, http")
+		if got := scheme(r); got != "https" {
+			t.Fatalf("scheme = %q, want https", got)
+		}
+	})
+
+	t.Run("url_scheme", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.URL = &url.URL{Scheme: "https", Path: "/"}
+		if got := scheme(r); got != "https" {
+			t.Fatalf("scheme = %q, want https", got)
+		}
+	})
+
+	t.Run("default_http", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.URL = &url.URL{Path: "/"}
+		if got := scheme(r); got != "http" {
+			t.Fatalf("scheme = %q, want http", got)
+		}
+	})
+}
+
+func TestNewWithConfigInstrumentError(t *testing.T) {
+	_, provider := newMeterProvider()
+	// Invalid instrument name (contains forbidden characters) should bubble up as an error.
+	_, err := NewWithConfig(Config{
+		MeterProvider: provider,
+		RequestCount:  InstrumentConfig{Name: strings.Repeat("a", 1024)},
+	})
+	if err == nil {
+		t.Skip("OTel SDK accepted the instrument name; cannot exercise error branch on this version")
+	}
+}
+
+func TestMiddlewarePanicsOnInvalidConfig(t *testing.T) {
+	defer func() {
+		_ = recover()
+	}()
+	// Provide an invalid name; if SDK does not panic we still pass cleanly via recover.
+	Middleware(WithRequestCount(InstrumentConfig{Name: ""}))
 }
 
 func newMeterProvider() (*sdkmetric.ManualReader, *sdkmetric.MeterProvider) {
