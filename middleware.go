@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/labstack/echo/v5"
 	"go.opentelemetry.io/otel/attribute"
@@ -22,25 +21,25 @@ type instruments struct {
 	activeRequests  metric.Int64UpDownCounter
 }
 
-type middleware struct {
-	instruments instruments
-	config      Config
-}
-
 // New creates Echo middleware and returns an error if OpenTelemetry instruments cannot be initialized.
+//
+// The returned middleware records the default HTTP server metrics. To register
+// custom MetricRecorders after construction or to access the configured meter,
+// use NewRecorder instead.
 func New(options ...Option) (echo.MiddlewareFunc, error) {
-	config := DefaultConfig()
-
-	for _, option := range options {
-		if option != nil {
-			option(&config)
-		}
+	recorder, err := NewRecorder(options...)
+	if err != nil {
+		return nil, err
 	}
 
-	return NewWithConfig(config)
+	return recorder.Handler(), nil
 }
 
 // Middleware creates Echo middleware with default configuration and panics on invalid configuration.
+//
+// The returned middleware records the default HTTP server metrics. To register
+// custom MetricRecorders after construction or to access the configured meter,
+// use NewRecorder instead.
 func Middleware(options ...Option) echo.MiddlewareFunc {
 	handler, err := New(options...)
 	if err != nil {
@@ -51,99 +50,20 @@ func Middleware(options ...Option) echo.MiddlewareFunc {
 }
 
 // NewWithConfig creates Echo middleware from an explicit Config.
+//
+// The returned middleware records the default HTTP server metrics. To register
+// custom MetricRecorders after construction or to access the configured meter,
+// use NewRecorderWithConfig instead.
 func NewWithConfig(config Config) (echo.MiddlewareFunc, error) {
-	config = applyConfigDefaults(config)
-
-	createdInstruments, err := newInstruments(config)
+	recorder, err := NewRecorderWithConfig(config)
 	if err != nil {
 		return nil, err
 	}
 
-	configuredMiddleware := middleware{
-		config:      config,
-		instruments: createdInstruments,
-	}
-
-	return configuredMiddleware.wrap, nil
+	return recorder.Handler(), nil
 }
 
-func (middleware middleware) wrap(next echo.HandlerFunc) echo.HandlerFunc {
-	return func(c *echo.Context) error {
-		if middleware.config.Skipper != nil && middleware.config.Skipper(c) {
-			return next(c)
-		}
-
-		ctx := c.Request().Context()
-		start := time.Now()
-		response := echo.NewResponse(c.Response(), c.Logger())
-		c.SetResponse(response)
-
-		var handlerErr error
-
-		if middleware.instruments.responseSize != nil {
-			response.After(func() {
-				status := responseStatus(response, handlerErr)
-				attributes := middleware.requestAttributes(c, status, handlerErr)
-				options := metric.WithAttributes(attributes...)
-
-				middleware.instruments.responseSize.Record(ctx, responseSize(response), options)
-			})
-		}
-
-		if middleware.instruments.activeRequests != nil {
-			activeAttributes := middleware.activeAttributes(c)
-
-			middleware.instruments.activeRequests.Add(ctx, 1, metric.WithAttributes(activeAttributes...))
-			defer middleware.instruments.activeRequests.Add(ctx, -1, metric.WithAttributes(activeAttributes...))
-		}
-
-		handlerErr = next(c)
-		status := responseStatus(response, handlerErr)
-
-		attributes := middleware.requestAttributes(c, status, handlerErr)
-
-		options := metric.WithAttributes(attributes...)
-
-		if middleware.instruments.requestCount != nil {
-			middleware.instruments.requestCount.Add(ctx, 1, options)
-		}
-
-		if middleware.instruments.requestDuration != nil {
-			duration := time.Since(start).Seconds()
-			middleware.instruments.requestDuration.Record(ctx, duration, options)
-		}
-
-		if middleware.instruments.requestSize != nil {
-			middleware.instruments.requestSize.Record(ctx, requestSize(c), options)
-		}
-
-		return handlerErr
-	}
-}
-
-func (middleware middleware) requestAttributes(c *echo.Context, status int, err error) []attribute.KeyValue {
-	attributes := requestAttributes(c, status, err)
-	if middleware.config.Attributes != nil {
-		attributes = append(attributes, middleware.config.Attributes(c, err)...)
-	}
-
-	return attributes
-}
-
-func (middleware middleware) activeAttributes(c *echo.Context) []attribute.KeyValue {
-	attributes := activeAttributes(c)
-	if middleware.config.Attributes != nil {
-		attributes = append(attributes, middleware.config.Attributes(c, nil)...)
-	}
-
-	return attributes
-}
-
-func newInstruments(config Config) (instruments, error) {
-	meter := config.MeterProvider.Meter(
-		config.MeterName,
-		metric.WithInstrumentationVersion(config.MeterVersion),
-	)
+func newInstrumentsForMeter(meter metric.Meter, config Config) (instruments, error) {
 	created := instruments{}
 
 	var err error

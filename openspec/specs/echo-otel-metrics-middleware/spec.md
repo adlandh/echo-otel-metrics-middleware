@@ -93,3 +93,85 @@ The project SHALL include tests, godoc examples, and a `README.md` that together
 #### Scenario: Godoc examples back the README recipes
 - **WHEN** users browse the package on `pkg.go.dev`
 - **THEN** they find executable godoc examples for the default installation, custom meter provider wiring, skipper configuration, and custom attribute extraction
+
+### Requirement: Middleware records custom per-request metrics
+The middleware SHALL allow applications to register zero or more custom metric recorders at initialization through the existing functional-options API. Each registered recorder MUST be invoked exactly once per non-skipped request, after the downstream handler has returned and the final response status is known, with the Echo context, the final status code, the handler error (or nil), the measured request duration, and the same bounded attribute slice the default instruments receive for that request.
+
+#### Scenario: Single recorder is invoked at request completion
+- **WHEN** an application installs the middleware with a single custom recorder registered through the initialization option
+- **THEN** the middleware invokes that recorder exactly once for the request, after the handler returns, with the final status, handler error, request duration, and the same attribute slice used by the default request count and duration instruments
+
+#### Scenario: Multiple recorders are invoked in registration order
+- **WHEN** an application registers more than one custom recorder at initialization
+- **THEN** the middleware invokes each recorder exactly once per request in the order they were registered
+
+#### Scenario: Recorders share the default and custom attribute set
+- **WHEN** the middleware is configured with a custom attribute extractor and one or more custom recorders
+- **THEN** each recorder receives an attribute slice containing both the default attributes (HTTP method, route pattern, status code, normalized scheme, error state) and the additional attributes returned by the extractor
+
+#### Scenario: Skipped request bypasses custom recorders
+- **WHEN** the configured skipper returns true for a request
+- **THEN** the middleware does not invoke any custom recorder for that request, in addition to not recording default instruments
+
+### Requirement: Middleware allows registering custom recorders after construction
+The middleware SHALL provide a public, concurrency-safe API to register additional custom metric recorders after the middleware has been constructed and while it is serving requests. Recorders registered after construction MUST be invoked for all subsequent non-skipped requests under the same contract as recorders registered at initialization.
+
+#### Scenario: Recorder added after construction is invoked on subsequent requests
+- **WHEN** an application registers a custom recorder after middleware construction
+- **THEN** every subsequent non-skipped request invokes that recorder under the same contract as recorders registered at initialization
+
+#### Scenario: Concurrent registration and serving is safe
+- **WHEN** an application registers a custom recorder while requests are being served concurrently
+- **THEN** registration completes without data races and in-flight requests either invoke the new recorder or do not, but never observe a partial or corrupted recorder list
+
+### Requirement: Middleware isolates custom recorder failures
+The middleware SHALL recover from any panic raised by a custom recorder so that the panic neither aborts the request, prevents subsequent recorders from running, nor blocks the default instruments from recording. Recovered panics MUST be logged through the configured Echo logger so that operators can observe recorder failures.
+
+#### Scenario: Panic in one recorder does not abort the request
+- **WHEN** a custom recorder panics during a request
+- **THEN** the request continues to a normal response, default instruments still record, and the response observed by the client is unchanged from the no-panic case
+
+#### Scenario: Panic in one recorder does not skip subsequent recorders
+- **WHEN** a custom recorder panics during a request and additional recorders are registered after it
+- **THEN** the middleware invokes every subsequent recorder for that same request
+
+#### Scenario: Recovered panics are logged
+- **WHEN** a custom recorder panics during a request
+- **THEN** the middleware logs the recovered value through the Echo logger at error level so that the failure is observable
+
+### Requirement: Middleware exposes the configured meter
+The middleware SHALL expose the configured OpenTelemetry `metric.Meter` so that applications can construct their own instruments under the same instrumentation scope (meter provider, meter name, meter version) without re-deriving them. The exposed meter MUST be the same meter used internally to create the default instruments.
+
+#### Scenario: Application creates a custom instrument using the exposed meter
+- **WHEN** an application retrieves the meter through the public accessor and creates a custom counter
+- **THEN** the resulting counter is bound to the same meter provider, meter name, and meter version that the middleware uses for its default instruments
+
+#### Scenario: Exposed meter is non-nil for default and custom configurations
+- **WHEN** an application retrieves the meter from a middleware constructed with default configuration or with a custom meter provider
+- **THEN** the returned meter is non-nil in both cases
+
+### Requirement: Custom metrics extension preserves backward compatibility
+The middleware SHALL keep the existing `Middleware()`, `New()`, and `NewWithConfig()` constructor signatures and behaviors unchanged. The custom-metrics extension MUST be additive only and MUST be reachable through a separate constructor that returns a richer value exposing post-construction registration and meter access.
+
+#### Scenario: Existing constructors keep their signatures and behavior
+- **WHEN** an application uses `Middleware()`, `New()`, or `NewWithConfig()` exactly as before this change
+- **THEN** the constructors compile, return the same types, and behave identically to before, with no requirement to opt into the custom-metrics API
+
+#### Scenario: Custom-metrics-aware constructor coexists with existing ones
+- **WHEN** an application uses the custom-metrics-aware constructor to obtain post-construction registration and meter access
+- **THEN** the resulting middleware behaves identically to one built with `New()` for default and recorder-free requests, and additionally supports recorder registration and meter retrieval
+
+### Requirement: Custom-metrics behavior is documented and exemplified
+The project SHALL include godoc examples and `README.md` content that demonstrate registering a custom recorder at initialization, registering a custom recorder after construction, retrieving the exposed meter to build a user-owned instrument, and the panic-isolation guarantee.
+
+#### Scenario: Godoc example for initialization-time registration exists
+- **WHEN** users browse the package on `pkg.go.dev`
+- **THEN** they find an executable godoc example that registers a custom recorder at initialization and uses it to record a value through a user-defined instrument
+
+#### Scenario: Godoc example for post-construction registration exists
+- **WHEN** users browse the package on `pkg.go.dev`
+- **THEN** they find an executable godoc example that constructs the middleware first and registers a custom recorder afterward
+
+#### Scenario: README documents custom-metrics recipe and panic guarantee
+- **WHEN** users read `README.md`
+- **THEN** they find a recipe section that shows both registration paths, an explanation of the shared attribute set, a note that recorder panics are recovered and logged, and the meter accessor for building user-owned instruments
