@@ -129,6 +129,25 @@ func TestMiddleware_DisablesInstrument(t *testing.T) {
 	}
 }
 
+func TestMiddleware_DisabledInstrumentStaysDisabledAcrossLaterOptions(t *testing.T) {
+	e, reader := setupTest(t,
+		WithRequestCount(InstrumentConfig{Disabled: true}),
+		WithRequestCount(InstrumentConfig{Name: "custom.server.requests"}),
+	)
+	e.GET("/users", func(c *echo.Context) error {
+		return c.NoContent(http.StatusOK)
+	})
+	serveGet(e, "/users")
+
+	metrics := collectMetrics(t, reader)
+	if _, ok := metrics[defaultRequestCountName]; ok {
+		t.Fatal("default request count metric was recorded after being disabled")
+	}
+	if _, ok := metrics["custom.server.requests"]; ok {
+		t.Fatal("renamed request count metric was recorded after being disabled")
+	}
+}
+
 func TestMiddleware_CustomMetricNameAndAttributes(t *testing.T) {
 	e, reader := setupTest(t,
 		WithRequestCount(InstrumentConfig{Name: "custom.server.requests"}),
@@ -212,10 +231,10 @@ func TestMiddleware_HandlerErrorMarksError(t *testing.T) {
 
 func TestResponseStatus(t *testing.T) {
 	tests := []struct {
-		name   string
-		setup  func(*echo.Response)
-		err    error
-		want   int
+		name  string
+		setup func(*echo.Response)
+		err   error
+		want  int
 	}{
 		{"committed_response_uses_status", func(r *echo.Response) { r.WriteHeader(http.StatusAccepted) }, errors.New("late"), http.StatusAccepted},
 		{"zero_status_defaults_ok", func(*echo.Response) {}, nil, http.StatusOK},

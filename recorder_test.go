@@ -270,8 +270,7 @@ func TestRecorder_PanicDoesNotSkipSubsequentRecorders(t *testing.T) {
 }
 
 func TestRecorder_RecoveredPanicIsLogged(t *testing.T) {
-	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
+	buf, logger := newBufferedErrorLogger()
 
 	_, provider := newMeterProvider()
 	r, err := NewRecorder(
@@ -292,11 +291,87 @@ func TestRecorder_RecoveredPanicIsLogged(t *testing.T) {
 	})
 	serveGet(e, "/log-panic")
 
-	if !bytes.Contains(buf.Bytes(), []byte("boom-message")) {
-		t.Fatalf("expected panic value in log output, got: %s", buf.String())
+	assertLogContains(t, buf, "boom-message")
+	assertLogContains(t, buf, "recorder panic")
+}
+
+func TestRecorder_AttributeExtractorPanicDoesNotAbortRequest(t *testing.T) {
+	buf, logger := newBufferedErrorLogger()
+
+	reader, provider := newMeterProvider()
+	r, err := NewRecorder(
+		WithMeterProvider(provider),
+		WithAttributes(func(*echo.Context, error) []attribute.KeyValue {
+			panic("extractor-boom")
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
 	}
-	if !bytes.Contains(buf.Bytes(), []byte("recorder panic")) {
-		t.Fatalf("expected recorder-panic message in log output, got: %s", buf.String())
+
+	e := echo.New()
+	e.Logger = logger
+	e.Use(r.Handler())
+	e.GET("/extractor-panic", func(c *echo.Context) error {
+		return c.NoContent(http.StatusAccepted)
+	})
+
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/extractor-panic", nil))
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+
+	requestCount := sumDataPoint[int64](t, collectMetrics(t, reader), defaultRequestCountName)
+	if requestCount.Value != 1 {
+		t.Fatalf("default request count after panic = %d, want 1", requestCount.Value)
+	}
+	assertLogContains(t, buf, "extractor-boom")
+	assertLogContains(t, buf, "attribute extractor panic")
+}
+
+func TestRecorder_CompletedAttributesAreExtractedOnce(t *testing.T) {
+	var calls atomic.Int64
+
+	_, provider := newMeterProvider()
+	r, err := NewRecorder(
+		WithMeterProvider(provider),
+		WithActiveRequests(InstrumentConfig{Disabled: true}),
+		WithResponseSize(InstrumentConfig{Disabled: true}),
+		WithAttributes(func(*echo.Context, error) []attribute.KeyValue {
+			calls.Add(1)
+			return []attribute.KeyValue{attribute.String("service.tier", "edge")}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+
+	e := echo.New()
+	e.Use(r.Handler())
+	e.GET("/attrs-once", func(c *echo.Context) error {
+		return c.NoContent(http.StatusOK)
+	})
+	serveGet(e, "/attrs-once")
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("attribute extractor calls = %d, want 1", got)
+	}
+}
+
+func newBufferedErrorLogger() (*bytes.Buffer, *slog.Logger) {
+	buf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	return buf, logger
+}
+
+func assertLogContains(t *testing.T, buf *bytes.Buffer, want string) {
+	t.Helper()
+
+	if !bytes.Contains(buf.Bytes(), []byte(want)) {
+		t.Fatalf("expected %q in log output, got: %s", want, buf.String())
 	}
 }
 
