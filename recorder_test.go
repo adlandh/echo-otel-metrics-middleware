@@ -270,8 +270,7 @@ func TestRecorder_PanicDoesNotSkipSubsequentRecorders(t *testing.T) {
 }
 
 func TestRecorder_RecoveredPanicIsLogged(t *testing.T) {
-	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
+	buf, logger := newBufferedErrorLogger()
 
 	_, provider := newMeterProvider()
 	r, err := NewRecorder(
@@ -292,17 +291,12 @@ func TestRecorder_RecoveredPanicIsLogged(t *testing.T) {
 	})
 	serveGet(e, "/log-panic")
 
-	if !bytes.Contains(buf.Bytes(), []byte("boom-message")) {
-		t.Fatalf("expected panic value in log output, got: %s", buf.String())
-	}
-	if !bytes.Contains(buf.Bytes(), []byte("recorder panic")) {
-		t.Fatalf("expected recorder-panic message in log output, got: %s", buf.String())
-	}
+	assertLogContains(t, buf, "boom-message")
+	assertLogContains(t, buf, "recorder panic")
 }
 
 func TestRecorder_AttributeExtractorPanicDoesNotAbortRequest(t *testing.T) {
-	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
+	buf, logger := newBufferedErrorLogger()
 
 	reader, provider := newMeterProvider()
 	r, err := NewRecorder(
@@ -319,29 +313,22 @@ func TestRecorder_AttributeExtractorPanicDoesNotAbortRequest(t *testing.T) {
 	e.Logger = logger
 	e.Use(r.Handler())
 	e.GET("/extractor-panic", func(c *echo.Context) error {
-		return c.String(http.StatusOK, "still ok")
+		return c.NoContent(http.StatusAccepted)
 	})
 
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/extractor-panic", nil))
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
-	if rec.Body.String() != "still ok" {
-		t.Fatalf("body = %q, want %q", rec.Body.String(), "still ok")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
 	}
 
 	requestCount := sumDataPoint[int64](t, collectMetrics(t, reader), defaultRequestCountName)
 	if requestCount.Value != 1 {
 		t.Fatalf("default request count after panic = %d, want 1", requestCount.Value)
 	}
-	if !bytes.Contains(buf.Bytes(), []byte("extractor-boom")) {
-		t.Fatalf("expected panic value in log output, got: %s", buf.String())
-	}
-	if !bytes.Contains(buf.Bytes(), []byte("attribute extractor panic")) {
-		t.Fatalf("expected extractor-panic message in log output, got: %s", buf.String())
-	}
+	assertLogContains(t, buf, "extractor-boom")
+	assertLogContains(t, buf, "attribute extractor panic")
 }
 
 func TestRecorder_CompletedAttributesAreExtractedOnce(t *testing.T) {
@@ -370,6 +357,21 @@ func TestRecorder_CompletedAttributesAreExtractedOnce(t *testing.T) {
 
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("attribute extractor calls = %d, want 1", got)
+	}
+}
+
+func newBufferedErrorLogger() (*bytes.Buffer, *slog.Logger) {
+	buf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	return buf, logger
+}
+
+func assertLogContains(t *testing.T, buf *bytes.Buffer, want string) {
+	t.Helper()
+
+	if !bytes.Contains(buf.Bytes(), []byte(want)) {
+		t.Fatalf("expected %q in log output, got: %s", want, buf.String())
 	}
 }
 
