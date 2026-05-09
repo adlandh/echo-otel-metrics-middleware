@@ -300,6 +300,79 @@ func TestRecorder_RecoveredPanicIsLogged(t *testing.T) {
 	}
 }
 
+func TestRecorder_AttributeExtractorPanicDoesNotAbortRequest(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	reader, provider := newMeterProvider()
+	r, err := NewRecorder(
+		WithMeterProvider(provider),
+		WithAttributes(func(*echo.Context, error) []attribute.KeyValue {
+			panic("extractor-boom")
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+
+	e := echo.New()
+	e.Logger = logger
+	e.Use(r.Handler())
+	e.GET("/extractor-panic", func(c *echo.Context) error {
+		return c.String(http.StatusOK, "still ok")
+	})
+
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/extractor-panic", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if rec.Body.String() != "still ok" {
+		t.Fatalf("body = %q, want %q", rec.Body.String(), "still ok")
+	}
+
+	requestCount := sumDataPoint[int64](t, collectMetrics(t, reader), defaultRequestCountName)
+	if requestCount.Value != 1 {
+		t.Fatalf("default request count after panic = %d, want 1", requestCount.Value)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("extractor-boom")) {
+		t.Fatalf("expected panic value in log output, got: %s", buf.String())
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("attribute extractor panic")) {
+		t.Fatalf("expected extractor-panic message in log output, got: %s", buf.String())
+	}
+}
+
+func TestRecorder_CompletedAttributesAreExtractedOnce(t *testing.T) {
+	var calls atomic.Int64
+
+	_, provider := newMeterProvider()
+	r, err := NewRecorder(
+		WithMeterProvider(provider),
+		WithActiveRequests(InstrumentConfig{Disabled: true}),
+		WithResponseSize(InstrumentConfig{Disabled: true}),
+		WithAttributes(func(*echo.Context, error) []attribute.KeyValue {
+			calls.Add(1)
+			return []attribute.KeyValue{attribute.String("service.tier", "edge")}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+
+	e := echo.New()
+	e.Use(r.Handler())
+	e.GET("/attrs-once", func(c *echo.Context) error {
+		return c.NoContent(http.StatusOK)
+	})
+	serveGet(e, "/attrs-once")
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("attribute extractor calls = %d, want 1", got)
+	}
+}
+
 func TestRecorder_AddRecorderAfterConstruction(t *testing.T) {
 	var calls atomic.Int64
 

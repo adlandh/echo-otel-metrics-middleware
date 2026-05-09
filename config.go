@@ -177,7 +177,9 @@ func mergeInstrumentConfig(current InstrumentConfig, next InstrumentConfig) Inst
 		current.Unit = next.Unit
 	}
 
-	current.Disabled = next.Disabled
+	if next.Disabled {
+		current.Disabled = true
+	}
 
 	return current
 }

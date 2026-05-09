@@ -1,6 +1,7 @@
 package echotelmetrics
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -192,20 +193,24 @@ func (r *Recorder) wrap(next echo.HandlerFunc) echo.HandlerFunc {
 		response := echo.NewResponse(c.Response(), c.Logger())
 		c.SetResponse(response)
 
-		var handlerErr error
+		activeCustomAttrs := r.customAttributes(c, nil)
 
-		if r.instruments.responseSize != nil {
-			response.After(func() {
-				status := responseStatus(response, handlerErr)
-				attributes := r.requestAttributes(c, status, handlerErr)
-				options := metric.WithAttributes(attributes...)
+		var (
+			handlerErr          error
+			completedAttributes []attribute.KeyValue
+		)
 
-				r.instruments.responseSize.Record(ctx, responseSize(response), options)
-			})
-		}
+		r.registerResponseSize(
+			ctx,
+			c,
+			response,
+			&handlerErr,
+			&completedAttributes,
+			activeCustomAttrs,
+		)
 
 		if r.instruments.activeRequests != nil {
-			activeAttrs := r.activeAttributes(c)
+			activeAttrs := activeAttributesWithCustom(c, activeCustomAttrs)
 
 			r.instruments.activeRequests.Add(ctx, 1, metric.WithAttributes(activeAttrs...))
 			defer r.instruments.activeRequests.Add(ctx, -1, metric.WithAttributes(activeAttrs...))
@@ -215,7 +220,11 @@ func (r *Recorder) wrap(next echo.HandlerFunc) echo.HandlerFunc {
 		status := responseStatus(response, handlerErr)
 		duration := time.Since(start)
 
-		attributes := r.requestAttributes(c, status, handlerErr)
+		completedCustomAttrs := r.completedCustomAttributes(c, handlerErr, activeCustomAttrs)
+
+		attributes := requestAttributesWithCustom(c, status, handlerErr, completedCustomAttrs)
+		completedAttributes = attributes
+
 		options := metric.WithAttributes(attributes...)
 
 		if r.instruments.requestCount != nil {
@@ -236,20 +245,80 @@ func (r *Recorder) wrap(next echo.HandlerFunc) echo.HandlerFunc {
 	}
 }
 
-func (r *Recorder) requestAttributes(c *echo.Context, status int, err error) []attribute.KeyValue {
-	attributes := requestAttributes(c, status, err)
-	if r.config.Attributes != nil {
-		attributes = append(attributes, r.config.Attributes(c, err)...)
+func (r *Recorder) registerResponseSize(
+	ctx context.Context,
+	c *echo.Context,
+	response *echo.Response,
+	handlerErr *error,
+	completedAttributes *[]attribute.KeyValue,
+	activeCustomAttrs []attribute.KeyValue,
+) {
+	if r.instruments.responseSize == nil {
+		return
 	}
+
+	response.After(func() {
+		status := responseStatus(response, *handlerErr)
+		attributes := *completedAttributes
+
+		if attributes == nil {
+			attributes = requestAttributesWithCustom(c, status, *handlerErr, activeCustomAttrs)
+		}
+
+		options := metric.WithAttributes(attributes...)
+
+		r.instruments.responseSize.Record(ctx, responseSize(response), options)
+	})
+}
+
+func (r *Recorder) completedCustomAttributes(
+	c *echo.Context,
+	handlerErr error,
+	fallback []attribute.KeyValue,
+) []attribute.KeyValue {
+	if handlerErr == nil {
+		return fallback
+	}
+
+	return r.customAttributes(c, handlerErr)
+}
+
+func (r *Recorder) customAttributes(c *echo.Context, err error) (attributes []attribute.KeyValue) {
+	if r.config.Attributes == nil {
+		return nil
+	}
+
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			c.Logger().Error(
+				"echo-otel-metrics: attribute extractor panic",
+				"panic", recovered,
+				"route", route(c),
+				"method", c.Request().Method,
+			)
+
+			attributes = nil
+		}
+	}()
+
+	return r.config.Attributes(c, err)
+}
+
+func requestAttributesWithCustom(
+	c *echo.Context,
+	status int,
+	err error,
+	custom []attribute.KeyValue,
+) []attribute.KeyValue {
+	attributes := requestAttributes(c, status, err)
+	attributes = append(attributes, custom...)
 
 	return attributes
 }
 
-func (r *Recorder) activeAttributes(c *echo.Context) []attribute.KeyValue {
+func activeAttributesWithCustom(c *echo.Context, custom []attribute.KeyValue) []attribute.KeyValue {
 	attributes := activeAttributes(c)
-	if r.config.Attributes != nil {
-		attributes = append(attributes, r.config.Attributes(c, nil)...)
-	}
+	attributes = append(attributes, custom...)
 
 	return attributes
 }

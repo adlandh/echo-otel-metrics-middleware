@@ -38,7 +38,7 @@ The middleware SHALL attach bounded default attributes that identify HTTP method
 - **THEN** the middleware uses a bounded fallback route value and does not record the raw request path
 
 ### Requirement: Middleware is configurable
-The middleware SHALL allow applications to configure meter provider, meter name, meter version, metric names, enabled instruments, skipped requests, and custom attribute extraction.
+The middleware SHALL allow applications to configure meter provider, meter name, meter version, metric names, enabled instruments, skipped requests, and custom attribute extraction. Custom attribute extraction MUST be isolated from request handling failures: if an extractor panics, the middleware SHALL recover, log the recovered value through the configured Echo logger, omit custom attributes for that extraction, and continue request handling and default metric recording.
 
 #### Scenario: Request is skipped
 - **WHEN** a configured skipper matches the incoming Echo v5 context
@@ -48,9 +48,17 @@ The middleware SHALL allow applications to configure meter provider, meter name,
 - **WHEN** configuration disables a specific default instrument
 - **THEN** the middleware does not create or record that instrument while keeping other enabled instruments functional
 
+#### Scenario: Disabled instrument remains disabled across partial options
+- **WHEN** configuration disables a specific default instrument and a later option changes that instrument's name, description, or unit without explicitly enabling it
+- **THEN** the middleware keeps that instrument disabled and does not create or record it
+
 #### Scenario: Custom attributes are added
 - **WHEN** configuration provides an attribute extraction function
 - **THEN** the middleware adds the returned attributes to recorded measurements along with the default attributes
+
+#### Scenario: Custom attribute extractor panic is isolated
+- **WHEN** a configured attribute extraction function panics during a request
+- **THEN** the middleware recovers the panic, logs the recovered value through the Echo logger, records default metrics without custom attributes from that failed extraction, and preserves the handler response
 
 ### Requirement: Middleware exposes an Echo-compatible handler
 The middleware SHALL expose an API that can be installed with Echo v5's middleware registration flow and wraps `echo.HandlerFunc` from `github.com/labstack/echo/v5` without changing handler behavior.
@@ -64,11 +72,15 @@ The middleware SHALL expose an API that can be installed with Echo v5's middlewa
 - **THEN** the middleware initializes successfully with default metric names, instruments, and attribute behavior
 
 ### Requirement: Middleware behavior is tested and documented
-The project SHALL include tests, godoc examples, and a `README.md` that together demonstrate default metrics, custom configuration, skipped requests, route pattern attributes, error handling, and end-to-end OpenTelemetry SDK wiring with a concrete exporter.
+The project SHALL include tests, godoc examples, and a `README.md` that together demonstrate default metrics, custom configuration, skipped requests, route pattern attributes, error handling, bounded custom attribute extraction, extension panic isolation, and end-to-end OpenTelemetry SDK wiring with a concrete exporter.
 
 #### Scenario: Tests validate recorded data
 - **WHEN** tests run with an in-memory OpenTelemetry metric reader
 - **THEN** they verify the expected instruments and attributes are recorded for representative Echo v5 requests
+
+#### Scenario: Tests validate defensive extension behavior
+- **WHEN** tests run for custom attributes and instrument configuration
+- **THEN** they verify extractor panic isolation, completed custom attributes are extracted once per request, and disabled instruments remain disabled across later partial options
 
 #### Scenario: Example shows SDK wiring
 - **WHEN** users read the godoc examples in `example_test.go`
@@ -82,9 +94,9 @@ The project SHALL include tests, godoc examples, and a `README.md` that together
 - **WHEN** users read `README.md`
 - **THEN** they find at least one complete, copy-pasteable example that wires the middleware to an OpenTelemetry SDK meter provider with a concrete exporter so that recorded metrics are observable
 
-#### Scenario: README documents skipper and custom-attributes recipes
+#### Scenario: README documents skipper and bounded custom-attributes recipes
 - **WHEN** users read `README.md`
-- **THEN** they find a recipe showing how to install a `Skipper` to bypass instrumentation for selected routes, and a recipe showing how to attach bounded custom attributes through `WithAttributes`
+- **THEN** they find a recipe showing how to install a `Skipper` to bypass instrumentation for selected routes, and a recipe showing how to attach custom attributes by mapping request-derived values through a bounded allowlist before recording them
 
 #### Scenario: README warns against unbounded attributes
 - **WHEN** users read `README.md`
@@ -92,10 +104,10 @@ The project SHALL include tests, godoc examples, and a `README.md` that together
 
 #### Scenario: Godoc examples back the README recipes
 - **WHEN** users browse the package on `pkg.go.dev`
-- **THEN** they find executable godoc examples for the default installation, custom meter provider wiring, skipper configuration, and custom attribute extraction
+- **THEN** they find executable godoc examples for the default installation, custom meter provider wiring, skipper configuration, and bounded custom attribute extraction
 
 ### Requirement: Middleware records custom per-request metrics
-The middleware SHALL allow applications to register zero or more custom metric recorders at initialization through the existing functional-options API. Each registered recorder MUST be invoked exactly once per non-skipped request, after the downstream handler has returned and the final response status is known, with the Echo context, the final status code, the handler error (or nil), the measured request duration, and the same bounded attribute slice the default instruments receive for that request.
+The middleware SHALL allow applications to register zero or more custom metric recorders at initialization through the existing functional-options API. Each registered recorder MUST be invoked exactly once per non-skipped request, after the downstream handler has returned and the final response status is known, with the Echo context, the final status code, the handler error (or nil), the measured request duration, and the same completed-request bounded attribute slice the default completed-request instruments receive for that request.
 
 #### Scenario: Single recorder is invoked at request completion
 - **WHEN** an application installs the middleware with a single custom recorder registered through the initialization option
@@ -107,7 +119,11 @@ The middleware SHALL allow applications to register zero or more custom metric r
 
 #### Scenario: Recorders share the default and custom attribute set
 - **WHEN** the middleware is configured with a custom attribute extractor and one or more custom recorders
-- **THEN** each recorder receives an attribute slice containing both the default attributes (HTTP method, route pattern, status code, normalized scheme, error state) and the additional attributes returned by the extractor
+- **THEN** each recorder receives an attribute slice containing both the default attributes (HTTP method, route pattern, status code, normalized scheme, error state) and the additional attributes returned by the completed-request extractor call
+
+#### Scenario: Completed custom attributes are extracted once
+- **WHEN** a request completes successfully and custom attributes are configured
+- **THEN** the middleware calls the extractor once for the completed-request metric path and reuses that custom attribute set for completed default instruments and custom recorders
 
 #### Scenario: Skipped request bypasses custom recorders
 - **WHEN** the configured skipper returns true for a request

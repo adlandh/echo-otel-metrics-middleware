@@ -68,9 +68,13 @@ func ExampleMiddleware_withSkipper() {
 func ExampleMiddleware_withAttributes() {
 	extractor := func(c *echo.Context, _ error) []attribute.KeyValue {
 		tier := c.Request().Header.Get("X-Tenant-Tier")
-		if tier == "" {
+		switch tier {
+		case "free", "pro", "enterprise":
+			// Keep the header-derived value only after bounding it to known tiers.
+		default:
 			tier = "free"
 		}
+
 		return []attribute.KeyValue{
 			attribute.String("tenant.tier", tier),
 		}
