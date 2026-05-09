@@ -25,6 +25,7 @@ Five standard HTTP server instruments, OTel HTTP semconv attribute names, and bo
   - [Custom attributes](#custom-attributes)
   - [Renaming or disabling instruments](#renaming-or-disabling-instruments)
   - [Custom meter provider](#custom-meter-provider)
+  - [Custom metrics](#custom-metrics)
 - [Error semantics](#error-semantics)
 - [Constructor variants](#constructor-variants)
 - [Cardinality cheat sheet](#cardinality-cheat-sheet)
@@ -246,6 +247,43 @@ e.Use(echotelmetrics.Middleware(
 ))
 ```
 
+### Custom metrics
+
+Register your own per-request metric recorders alongside the five default instruments. A `MetricRecorder` is invoked once per non-skipped request, after the handler returns, with the same bounded attribute slice the default instruments receive — so a custom counter automatically gets `http.route`, `http.request.method`, etc.
+
+Two registration paths are supported. Use `WithRecorder` at initialization, or `(*Recorder).AddRecorder` after construction:
+
+```go
+recorder, err := echotelmetrics.NewRecorder(
+    echotelmetrics.WithMeterProvider(provider),
+    echotelmetrics.WithRecorder(func(c *echo.Context, status int, err error, duration time.Duration, attrs []attribute.KeyValue) {
+        // attrs is shared with the default instruments — do not mutate it.
+        // Build a new slice on top of attrs if you need extra labels.
+    }),
+)
+if err != nil {
+    panic(err)
+}
+
+e := echo.New()
+e.Use(recorder.Handler())
+
+// Later — feature flag flip, config reload, startup hook, etc.
+recorder.AddRecorder(myExtraRecorder)
+```
+
+The configured meter is also exposed for instruments that don't fit the per-request recorder pattern (background workers, batch jobs, queue depth):
+
+```go
+queueDepth, err := recorder.Meter().Int64UpDownCounter("app.queue.depth")
+```
+
+`recorder.Meter()` returns the same `metric.Meter` the middleware uses internally, bound to the configured meter provider, name, and version. User-built instruments share the instrumentation scope with the defaults.
+
+**Panic isolation.** A panic raised inside a recorder is recovered, logged through the Echo logger at error level, and does not abort the request, skip subsequent recorders, or prevent default instruments from recording.
+
+See the executable godoc examples (`ExampleNewRecorder`, `ExampleRecorder_AddRecorder`, `ExampleRecorder_Meter`) on [pkg.go.dev](https://pkg.go.dev/github.com/adlandh/echo-otel-metrics-middleware) for full snippets.
+
 ## Error semantics
 
 Three behaviours that are easy to miss:
@@ -261,6 +299,8 @@ Three behaviours that are easy to miss:
 | `Middleware(opts...)` | Creates the middleware and **panics** if OTel instrument creation fails. Convenient for `e.Use(...)` one-liners. |
 | `New(opts...)` | Returns `(echo.MiddlewareFunc, error)`. Use in production code where you want to handle the error explicitly. |
 | `NewWithConfig(cfg)` | Like `New` but accepts a fully-constructed `Config` instead of variadic options. Use when you build the config programmatically. |
+| `NewRecorder(opts...)` | Returns `(*Recorder, error)`. Use this when you need post-construction registration of custom `MetricRecorder`s or direct access to the configured meter. |
+| `NewRecorderWithConfig(cfg)` | Like `NewRecorder` but accepts a `Config` value directly. |
 
 ## Cardinality cheat sheet
 

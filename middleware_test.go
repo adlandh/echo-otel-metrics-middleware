@@ -274,22 +274,89 @@ func TestSchemeDetection(t *testing.T) {
 	}
 }
 
-func TestNewWithConfigInstrumentError(t *testing.T) {
-	_, provider := newMeterProvider()
-	_, err := NewWithConfig(Config{
-		MeterProvider: provider,
-		RequestCount:  InstrumentConfig{Name: strings.Repeat("a", 1024)},
-	})
-	if err == nil {
-		t.Skip("OTel SDK accepted the instrument name; cannot exercise error branch on this version")
+func TestNewWithConfigInstrumentErrors(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*Config)
+		want      string
+	}{
+		{
+			name: "request_count",
+			configure: func(config *Config) {
+				config.RequestCount = InstrumentConfig{Name: invalidInstrumentName()}
+			},
+			want: "creating request count instrument",
+		},
+		{
+			name: "request_duration",
+			configure: func(config *Config) {
+				config.RequestDuration = InstrumentConfig{Name: invalidInstrumentName()}
+			},
+			want: "creating request duration instrument",
+		},
+		{
+			name: "request_size",
+			configure: func(config *Config) {
+				config.RequestSize = InstrumentConfig{Name: invalidInstrumentName()}
+			},
+			want: "creating request size instrument",
+		},
+		{
+			name: "response_size",
+			configure: func(config *Config) {
+				config.ResponseSize = InstrumentConfig{Name: invalidInstrumentName()}
+			},
+			want: "creating response size instrument",
+		},
+		{
+			name: "active_requests",
+			configure: func(config *Config) {
+				config.ActiveRequests = InstrumentConfig{Name: invalidInstrumentName()}
+			},
+			want: "creating active requests instrument",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, provider := newMeterProvider()
+			config := Config{MeterProvider: provider}
+			tt.configure(&config)
+
+			_, err := NewWithConfig(config)
+			if err == nil {
+				t.Fatalf("NewWithConfig error = nil, want %q", tt.want)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("NewWithConfig error = %q, want substring %q", err, tt.want)
+			}
+		})
 	}
 }
 
-func TestMiddlewarePanicsOnInvalidConfig(_ *testing.T) {
+func TestNewReturnsInstrumentError(t *testing.T) {
+	_, provider := newMeterProvider()
+	_, err := New(
+		WithMeterProvider(provider),
+		WithActiveRequests(InstrumentConfig{Name: invalidInstrumentName()}),
+	)
+	if err == nil {
+		t.Fatal("New error = nil, want instrument creation error")
+	}
+}
+
+func TestMiddlewarePanicsOnInvalidConfig(t *testing.T) {
 	defer func() {
-		_ = recover()
+		if recover() == nil {
+			t.Fatal("Middleware did not panic")
+		}
 	}()
-	Middleware(WithRequestCount(InstrumentConfig{Name: ""}))
+
+	_, provider := newMeterProvider()
+	Middleware(
+		WithMeterProvider(provider),
+		WithActiveRequests(InstrumentConfig{Name: invalidInstrumentName()}),
+	)
 }
 
 func setupTest(t *testing.T, opts ...Option) (*echo.Echo, *sdkmetric.ManualReader) {
@@ -311,6 +378,10 @@ func newMeterProvider() (*sdkmetric.ManualReader, *sdkmetric.MeterProvider) {
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 
 	return reader, provider
+}
+
+func invalidInstrumentName() string {
+	return strings.Repeat("a", 1024)
 }
 
 func collectMetrics(t *testing.T, reader *sdkmetric.ManualReader) map[string]metricdata.Metrics {

@@ -47,6 +47,12 @@ type Config struct {
 	RequestSize     InstrumentConfig
 	ResponseSize    InstrumentConfig
 	ActiveRequests  InstrumentConfig
+
+	// Recorders are MetricRecorders registered at initialization. Use
+	// WithRecorder to populate this slice through the functional-options API,
+	// or assign it directly when building a Config value. Recorders may also
+	// be added after construction through (*Recorder).AddRecorder.
+	Recorders []MetricRecorder
 }
 
 // Option mutates middleware configuration.
