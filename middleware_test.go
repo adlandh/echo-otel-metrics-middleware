@@ -347,7 +347,7 @@ func TestNewReturnsInstrumentError(t *testing.T) {
 
 func TestMiddlewarePanicsOnInvalidConfig(t *testing.T) {
 	defer func() {
-		if recovered := recover(); recovered == nil {
+		if recover() == nil {
 			t.Fatal("Middleware did not panic")
 		}
 	}()
