@@ -78,33 +78,54 @@ func TestMiddleware_RecordsHTTPErrorStatus(t *testing.T) {
 	}
 }
 
-func TestMiddleware_MultiWriteResponseRecordsOneFinalResponseSize(t *testing.T) {
-	e, reader := setupTest(t)
-	e.GET("/multi-write", func(c *echo.Context) error {
-		if _, err := c.Response().Write([]byte("hello")); err != nil {
-			return err
-		}
-		_, err := c.Response().Write([]byte("world"))
-		return err
-	})
-
-	serveGet(e, "/multi-write")
-
-	assertResponseSizeDatapoint(t, reader, len("helloworld"))
-}
-
-func TestMiddleware_ErrorHandlerResponseSizeIsIncluded(t *testing.T) {
-	e, reader := setupTest(t)
-	e.HTTPErrorHandler = func(c *echo.Context, _ error) {
-		_ = c.String(http.StatusInternalServerError, "handled error")
+func TestMiddleware_ResponseSizeRecordsOnce(t *testing.T) {
+	tests := []struct {
+		name      string
+		path      string
+		body      string
+		configure func(*echo.Echo)
+		handler   echo.HandlerFunc
+	}{
+		{
+			name: "multi_write_final_size",
+			path: "/multi-write",
+			body: "helloworld",
+			handler: func(c *echo.Context) error {
+				if _, err := c.Response().Write([]byte("hello")); err != nil {
+					return err
+				}
+				_, err := c.Response().Write([]byte("world"))
+				return err
+			},
+		},
+		{
+			name: "error_handler_body_size",
+			path: "/custom-error",
+			body: "handled error",
+			configure: func(e *echo.Echo) {
+				e.HTTPErrorHandler = func(c *echo.Context, _ error) {
+					_ = c.String(http.StatusInternalServerError, "handled error")
+				}
+			},
+			handler: func(*echo.Context) error {
+				return errors.New("boom")
+			},
+		},
 	}
-	e.GET("/custom-error", func(*echo.Context) error {
-		return errors.New("boom")
-	})
 
-	serveGet(e, "/custom-error")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e, reader := setupTest(t)
+			if tt.configure != nil {
+				tt.configure(e)
+			}
+			e.GET(tt.path, tt.handler)
 
-	assertResponseSizeDatapoint(t, reader, len("handled error"))
+			serveGet(e, tt.path)
+
+			assertResponseSizeDatapoint(t, reader, len(tt.body))
+		})
+	}
 }
 
 func TestMiddleware_NormalizesScheme(t *testing.T) {
