@@ -233,7 +233,7 @@ func (r *Recorder) wrap(next echo.HandlerFunc) echo.HandlerFunc {
 
 func (r *Recorder) registerResponseSize(
 	ctx context.Context,
-	c *echo.Context,
+	_ *echo.Context,
 	response *echo.Response,
 	handlerErr error,
 	attributes []attribute.KeyValue,

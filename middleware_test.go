@@ -90,18 +90,12 @@ func TestMiddleware_MultiWriteResponseRecordsOneFinalResponseSize(t *testing.T) 
 
 	serveGet(e, "/multi-write")
 
-	responseSize := histogramDataPoint[int64](t, collectMetrics(t, reader), defaultResponseSizeName)
-	if responseSize.Count != 1 {
-		t.Fatalf("response size count = %d, want 1", responseSize.Count)
-	}
-	if responseSize.Sum != int64(len("helloworld")) {
-		t.Fatalf("response size sum = %d, want %d", responseSize.Sum, len("helloworld"))
-	}
+	assertResponseSizeDatapoint(t, reader, len("helloworld"))
 }
 
 func TestMiddleware_ErrorHandlerResponseSizeIsIncluded(t *testing.T) {
 	e, reader := setupTest(t)
-	e.HTTPErrorHandler = func(c *echo.Context, err error) {
+	e.HTTPErrorHandler = func(c *echo.Context, _ error) {
 		_ = c.String(http.StatusInternalServerError, "handled error")
 	}
 	e.GET("/custom-error", func(*echo.Context) error {
@@ -110,13 +104,7 @@ func TestMiddleware_ErrorHandlerResponseSizeIsIncluded(t *testing.T) {
 
 	serveGet(e, "/custom-error")
 
-	responseSize := histogramDataPoint[int64](t, collectMetrics(t, reader), defaultResponseSizeName)
-	if responseSize.Count != 1 {
-		t.Fatalf("response size count = %d, want 1", responseSize.Count)
-	}
-	if responseSize.Sum != int64(len("handled error")) {
-		t.Fatalf("response size sum = %d, want %d", responseSize.Sum, len("handled error"))
-	}
+	assertResponseSizeDatapoint(t, reader, len("handled error"))
 }
 
 func TestMiddleware_NormalizesScheme(t *testing.T) {
@@ -506,6 +494,18 @@ func histogramDataPoint[N int64 | float64](
 	}
 
 	return histogram.DataPoints[0]
+}
+
+func assertResponseSizeDatapoint(t *testing.T, reader *sdkmetric.ManualReader, want int) {
+	t.Helper()
+
+	responseSize := histogramDataPoint[int64](t, collectMetrics(t, reader), defaultResponseSizeName)
+	if responseSize.Count != 1 {
+		t.Fatalf("response size count = %d, want 1", responseSize.Count)
+	}
+	if responseSize.Sum != int64(want) {
+		t.Fatalf("response size sum = %d, want %d", responseSize.Sum, want)
+	}
 }
 
 func assertAttribute(t *testing.T, attributes attribute.Set, key string, want any) {
