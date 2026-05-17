@@ -128,6 +128,29 @@ func TestMiddleware_ResponseSizeRecordsOnce(t *testing.T) {
 	}
 }
 
+func TestRecorder_ResponseSizeAfterCallbackRecordsOnce(t *testing.T) {
+	reader, provider := newMeterProvider()
+	r, err := NewRecorder(WithMeterProvider(provider))
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+
+	response := echo.NewResponse(httptest.NewRecorder(), echo.New().Logger)
+	r.registerResponseSize(context.Background(), nil, response, errors.New("boom"), nil)
+
+	if _, err := response.Write([]byte("first")); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if _, err := response.Write([]byte("second")); err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+
+	responseSize := histogramDataPoint[int64](t, collectMetrics(t, reader), defaultResponseSizeName)
+	if responseSize.Count != 1 {
+		t.Fatalf("response size count = %d, want 1", responseSize.Count)
+	}
+}
+
 func TestMiddleware_NormalizesScheme(t *testing.T) {
 	e, reader := setupTest(t)
 	e.GET("/scheme", func(c *echo.Context) error {
