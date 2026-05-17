@@ -44,6 +44,16 @@ func captureRecorder(mu *sync.Mutex, calls *[]recorderCall) MetricRecorder {
 	}
 }
 
+func captureAttributes(mu *sync.Mutex, captured *[]attribute.KeyValue) MetricRecorder {
+	return func(_ *echo.Context, _ int, _ error, _ time.Duration, attrs []attribute.KeyValue) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		*captured = make([]attribute.KeyValue, len(attrs))
+		copy(*captured, attrs)
+	}
+}
+
 func TestRecorder_SingleRecorderInvokedAtRequestCompletion(t *testing.T) {
 	var (
 		mu    sync.Mutex
@@ -151,12 +161,7 @@ func TestRecorder_SharesDefaultAndCustomAttributes(t *testing.T) {
 		WithAttributes(func(*echo.Context, error) []attribute.KeyValue {
 			return []attribute.KeyValue{attribute.String("tenant.tier", "pro")}
 		}),
-		WithRecorder(func(_ *echo.Context, _ int, _ error, _ time.Duration, attrs []attribute.KeyValue) {
-			mu.Lock()
-			defer mu.Unlock()
-			captured = make([]attribute.KeyValue, len(attrs))
-			copy(captured, attrs)
-		}),
+		WithRecorder(captureAttributes(&mu, &captured)),
 	)
 	if err != nil {
 		t.Fatalf("NewRecorder: %v", err)
@@ -191,12 +196,7 @@ func TestRecorder_CompletedAttributesReadHandlerContext(t *testing.T) {
 			value, _ := c.Get("tenant.id").(string)
 			return []attribute.KeyValue{attribute.String("tenant.id", value)}
 		}),
-		WithRecorder(func(_ *echo.Context, _ int, _ error, _ time.Duration, attrs []attribute.KeyValue) {
-			mu.Lock()
-			defer mu.Unlock()
-			captured = make([]attribute.KeyValue, len(attrs))
-			copy(captured, attrs)
-		}),
+		WithRecorder(captureAttributes(&mu, &captured)),
 	)
 	if err != nil {
 		t.Fatalf("NewRecorder: %v", err)
