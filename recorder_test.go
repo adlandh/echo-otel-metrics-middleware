@@ -44,6 +44,16 @@ func captureRecorder(mu *sync.Mutex, calls *[]recorderCall) MetricRecorder {
 	}
 }
 
+func captureAttributes(mu *sync.Mutex, captured *[]attribute.KeyValue) MetricRecorder {
+	return func(_ *echo.Context, _ int, _ error, _ time.Duration, attrs []attribute.KeyValue) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		*captured = make([]attribute.KeyValue, len(attrs))
+		copy(*captured, attrs)
+	}
+}
+
 func TestRecorder_SingleRecorderInvokedAtRequestCompletion(t *testing.T) {
 	var (
 		mu    sync.Mutex
@@ -151,12 +161,7 @@ func TestRecorder_SharesDefaultAndCustomAttributes(t *testing.T) {
 		WithAttributes(func(*echo.Context, error) []attribute.KeyValue {
 			return []attribute.KeyValue{attribute.String("tenant.tier", "pro")}
 		}),
-		WithRecorder(func(_ *echo.Context, _ int, _ error, _ time.Duration, attrs []attribute.KeyValue) {
-			mu.Lock()
-			defer mu.Unlock()
-			captured = make([]attribute.KeyValue, len(attrs))
-			copy(captured, attrs)
-		}),
+		WithRecorder(captureAttributes(&mu, &captured)),
 	)
 	if err != nil {
 		t.Fatalf("NewRecorder: %v", err)
@@ -175,6 +180,42 @@ func TestRecorder_SharesDefaultAndCustomAttributes(t *testing.T) {
 	assertAttributeSlice(t, captured, "http.request.method", http.MethodGet)
 	assertAttributeSlice(t, captured, "http.route", "/attrs")
 	assertAttributeSlice(t, captured, "tenant.tier", "pro")
+}
+
+func TestRecorder_CompletedAttributesReadHandlerContext(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		captured []attribute.KeyValue
+	)
+
+	reader, provider := newMeterProvider()
+	r, err := NewRecorder(
+		WithMeterProvider(provider),
+		WithActiveRequests(InstrumentConfig{Disabled: true}),
+		WithAttributes(func(c *echo.Context, _ error) []attribute.KeyValue {
+			value, _ := c.Get("tenant.id").(string)
+			return []attribute.KeyValue{attribute.String("tenant.id", value)}
+		}),
+		WithRecorder(captureAttributes(&mu, &captured)),
+	)
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+
+	e := echo.New()
+	e.Use(r.Handler())
+	e.GET("/handler-context", func(c *echo.Context) error {
+		c.Set("tenant.id", "tenant-from-handler")
+		return c.NoContent(http.StatusOK)
+	})
+	serveGet(e, "/handler-context")
+
+	requestCount := sumDataPoint[int64](t, collectMetrics(t, reader), defaultRequestCountName)
+	assertAttribute(t, requestCount.Attributes, "tenant.id", "tenant-from-handler")
+
+	mu.Lock()
+	defer mu.Unlock()
+	assertAttributeSlice(t, captured, "tenant.id", "tenant-from-handler")
 }
 
 func TestRecorder_SkippedRequestBypassesRecorders(t *testing.T) {

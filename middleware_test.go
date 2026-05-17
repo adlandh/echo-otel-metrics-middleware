@@ -78,6 +78,79 @@ func TestMiddleware_RecordsHTTPErrorStatus(t *testing.T) {
 	}
 }
 
+func TestMiddleware_ResponseSizeRecordsOnce(t *testing.T) {
+	tests := []struct {
+		name      string
+		path      string
+		body      string
+		configure func(*echo.Echo)
+		handler   echo.HandlerFunc
+	}{
+		{
+			name: "multi_write_final_size",
+			path: "/multi-write",
+			body: "helloworld",
+			handler: func(c *echo.Context) error {
+				if _, err := c.Response().Write([]byte("hello")); err != nil {
+					return err
+				}
+				_, err := c.Response().Write([]byte("world"))
+				return err
+			},
+		},
+		{
+			name: "error_handler_body_size",
+			path: "/custom-error",
+			body: "handled error",
+			configure: func(e *echo.Echo) {
+				e.HTTPErrorHandler = func(c *echo.Context, _ error) {
+					_ = c.String(http.StatusInternalServerError, "handled error")
+				}
+			},
+			handler: func(*echo.Context) error {
+				return errors.New("boom")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e, reader := setupTest(t)
+			if tt.configure != nil {
+				tt.configure(e)
+			}
+			e.GET(tt.path, tt.handler)
+
+			serveGet(e, tt.path)
+
+			assertResponseSizeDatapoint(t, reader, len(tt.body))
+		})
+	}
+}
+
+func TestRecorder_ResponseSizeAfterCallbackRecordsOnce(t *testing.T) {
+	reader, provider := newMeterProvider()
+	r, err := NewRecorder(WithMeterProvider(provider))
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+
+	response := echo.NewResponse(httptest.NewRecorder(), echo.New().Logger)
+	r.registerResponseSize(context.Background(), nil, response, errors.New("boom"), nil)
+
+	if _, err := response.Write([]byte("first")); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if _, err := response.Write([]byte("second")); err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+
+	responseSize := histogramDataPoint[int64](t, collectMetrics(t, reader), defaultResponseSizeName)
+	if responseSize.Count != 1 {
+		t.Fatalf("response size count = %d, want 1", responseSize.Count)
+	}
+}
+
 func TestMiddleware_NormalizesScheme(t *testing.T) {
 	e, reader := setupTest(t)
 	e.GET("/scheme", func(c *echo.Context) error {
@@ -465,6 +538,18 @@ func histogramDataPoint[N int64 | float64](
 	}
 
 	return histogram.DataPoints[0]
+}
+
+func assertResponseSizeDatapoint(t *testing.T, reader *sdkmetric.ManualReader, want int) {
+	t.Helper()
+
+	responseSize := histogramDataPoint[int64](t, collectMetrics(t, reader), defaultResponseSizeName)
+	if responseSize.Count != 1 {
+		t.Fatalf("response size count = %d, want 1", responseSize.Count)
+	}
+	if responseSize.Sum != int64(want) {
+		t.Fatalf("response size sum = %d, want %d", responseSize.Sum, want)
+	}
 }
 
 func assertAttribute(t *testing.T, attributes attribute.Set, key string, want any) {
