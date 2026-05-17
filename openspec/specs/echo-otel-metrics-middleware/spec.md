@@ -5,15 +5,23 @@ Define the expected behavior, configuration surface, and documentation requireme
 ## Requirements
 
 ### Requirement: Middleware records default HTTP metrics
-The middleware SHALL record OpenTelemetry HTTP server metrics for each non-skipped Echo v5 request using default instruments for request count, request duration, request body size, response body size, and active requests.
+The middleware SHALL record OpenTelemetry HTTP server metrics for each non-skipped Echo v5 request using default instruments for request count, request duration, request body size, response body size, and active requests. Completed request instruments, including response body size, SHALL record at most one measurement per request.
 
 #### Scenario: Successful request records metrics
 - **WHEN** a configured Echo v5 route handles a request successfully
-- **THEN** the middleware records one completed request, one duration measurement, request and response size measurements when known, and active request state for the request lifetime
+- **THEN** the middleware records one completed request, one duration measurement, one request size measurement when known, one response size measurement when known, and active request state for the request lifetime
+
+#### Scenario: Multi-write response records one response size measurement
+- **WHEN** a handler writes a response body in multiple chunks during one request
+- **THEN** the middleware records one response body size measurement whose value is the final number of response body bytes sent for that request
 
 #### Scenario: Handler error records metrics
 - **WHEN** a downstream Echo handler returns an error
 - **THEN** the middleware still records completed request metrics using the final response status available to Echo
+
+#### Scenario: Error handler response size is included
+- **WHEN** Echo's central error handler writes an error response body after the downstream handler returns an error
+- **THEN** the middleware records one response body size measurement that includes the error-handler-written bytes
 
 ### Requirement: Middleware uses OpenTelemetry metrics APIs
 The middleware SHALL emit metrics through OpenTelemetry `metric` instruments and SHALL NOT require Prometheus client collectors or an embedded scrape endpoint.
@@ -120,6 +128,10 @@ The middleware SHALL allow applications to register zero or more custom metric r
 #### Scenario: Recorders share the default and custom attribute set
 - **WHEN** the middleware is configured with a custom attribute extractor and one or more custom recorders
 - **THEN** each recorder receives an attribute slice containing both the default attributes (HTTP method, route pattern, status code, normalized scheme, error state) and the additional attributes returned by the completed-request extractor call
+
+#### Scenario: Completed custom attributes are extracted after handler completion
+- **WHEN** a handler stores request-scoped context data before returning successfully and custom attributes are configured to read that data
+- **THEN** the completed default instruments and custom recorders use custom attributes extracted after the handler has returned
 
 #### Scenario: Completed custom attributes are extracted once
 - **WHEN** a request completes successfully and custom attributes are configured

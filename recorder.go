@@ -193,37 +193,21 @@ func (r *Recorder) wrap(next echo.HandlerFunc) echo.HandlerFunc {
 		response := echo.NewResponse(c.Response(), c.Logger())
 		c.SetResponse(response)
 
-		activeCustomAttrs := r.customAttributes(c, nil)
-
-		var (
-			handlerErr          error
-			completedAttributes []attribute.KeyValue
-		)
-
-		r.registerResponseSize(
-			ctx,
-			c,
-			response,
-			&handlerErr,
-			&completedAttributes,
-			activeCustomAttrs,
-		)
-
 		if r.instruments.activeRequests != nil {
+			activeCustomAttrs := r.customAttributes(c, nil)
 			activeAttrs := activeAttributesWithCustom(c, activeCustomAttrs)
 
 			r.instruments.activeRequests.Add(ctx, 1, metric.WithAttributes(activeAttrs...))
 			defer r.instruments.activeRequests.Add(ctx, -1, metric.WithAttributes(activeAttrs...))
 		}
 
-		handlerErr = next(c)
+		handlerErr := next(c)
 		status := responseStatus(response, handlerErr)
 		duration := time.Since(start)
 
-		completedCustomAttrs := r.completedCustomAttributes(c, handlerErr, activeCustomAttrs)
+		completedCustomAttrs := r.customAttributes(c, handlerErr)
 
 		attributes := requestAttributesWithCustom(c, status, handlerErr, completedCustomAttrs)
-		completedAttributes = attributes
 
 		options := metric.WithAttributes(attributes...)
 
@@ -239,6 +223,8 @@ func (r *Recorder) wrap(next echo.HandlerFunc) echo.HandlerFunc {
 			r.instruments.requestSize.Record(ctx, requestSize(c), options)
 		}
 
+		r.registerResponseSize(ctx, c, response, handlerErr, attributes)
+
 		r.invokeRecorders(c, status, handlerErr, duration, attributes)
 
 		return handlerErr
@@ -249,38 +235,34 @@ func (r *Recorder) registerResponseSize(
 	ctx context.Context,
 	c *echo.Context,
 	response *echo.Response,
-	handlerErr *error,
-	completedAttributes *[]attribute.KeyValue,
-	activeCustomAttrs []attribute.KeyValue,
+	handlerErr error,
+	attributes []attribute.KeyValue,
 ) {
 	if r.instruments.responseSize == nil {
 		return
 	}
 
-	response.After(func() {
-		status := responseStatus(response, *handlerErr)
-		attributes := *completedAttributes
-
-		if attributes == nil {
-			attributes = requestAttributesWithCustom(c, status, *handlerErr, activeCustomAttrs)
-		}
-
+	record := func() {
 		options := metric.WithAttributes(attributes...)
-
 		r.instruments.responseSize.Record(ctx, responseSize(response), options)
-	})
-}
-
-func (r *Recorder) completedCustomAttributes(
-	c *echo.Context,
-	handlerErr error,
-	fallback []attribute.KeyValue,
-) []attribute.KeyValue {
-	if handlerErr == nil {
-		return fallback
 	}
 
-	return r.customAttributes(c, handlerErr)
+	if handlerErr == nil || response.Committed {
+		record()
+		return
+	}
+
+	recorded := false
+
+	response.After(func() {
+		if recorded {
+			return
+		}
+
+		recorded = true
+
+		record()
+	})
 }
 
 func (r *Recorder) customAttributes(c *echo.Context, err error) (attributes []attribute.KeyValue) {

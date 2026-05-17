@@ -78,6 +78,47 @@ func TestMiddleware_RecordsHTTPErrorStatus(t *testing.T) {
 	}
 }
 
+func TestMiddleware_MultiWriteResponseRecordsOneFinalResponseSize(t *testing.T) {
+	e, reader := setupTest(t)
+	e.GET("/multi-write", func(c *echo.Context) error {
+		if _, err := c.Response().Write([]byte("hello")); err != nil {
+			return err
+		}
+		_, err := c.Response().Write([]byte("world"))
+		return err
+	})
+
+	serveGet(e, "/multi-write")
+
+	responseSize := histogramDataPoint[int64](t, collectMetrics(t, reader), defaultResponseSizeName)
+	if responseSize.Count != 1 {
+		t.Fatalf("response size count = %d, want 1", responseSize.Count)
+	}
+	if responseSize.Sum != int64(len("helloworld")) {
+		t.Fatalf("response size sum = %d, want %d", responseSize.Sum, len("helloworld"))
+	}
+}
+
+func TestMiddleware_ErrorHandlerResponseSizeIsIncluded(t *testing.T) {
+	e, reader := setupTest(t)
+	e.HTTPErrorHandler = func(c *echo.Context, err error) {
+		_ = c.String(http.StatusInternalServerError, "handled error")
+	}
+	e.GET("/custom-error", func(*echo.Context) error {
+		return errors.New("boom")
+	})
+
+	serveGet(e, "/custom-error")
+
+	responseSize := histogramDataPoint[int64](t, collectMetrics(t, reader), defaultResponseSizeName)
+	if responseSize.Count != 1 {
+		t.Fatalf("response size count = %d, want 1", responseSize.Count)
+	}
+	if responseSize.Sum != int64(len("handled error")) {
+		t.Fatalf("response size sum = %d, want %d", responseSize.Sum, len("handled error"))
+	}
+}
+
 func TestMiddleware_NormalizesScheme(t *testing.T) {
 	e, reader := setupTest(t)
 	e.GET("/scheme", func(c *echo.Context) error {
