@@ -306,6 +306,24 @@ Three behaviours that are easy to miss:
 | `NewRecorder(opts...)` | Returns `(*Recorder, error)`. Use this when you need post-construction registration of custom `MetricRecorder`s or direct access to the configured meter. |
 | `NewRecorderWithConfig(cfg)` | Like `NewRecorder` but accepts a `Config` value directly. |
 
+### Handling the constructor error
+
+`Middleware(opts...)` panics if OpenTelemetry instrument creation fails. In production code, prefer `New(opts...)` so you can handle that failure explicitly instead of crashing on startup:
+
+```go
+mw, err := echotelmetrics.New(echotelmetrics.WithMeterName("com.example.myservice"))
+if err != nil {
+    // Handle the failure however your service prefers — return it up the
+    // call stack, log and exit, fall back to a no-op, etc.
+    return err
+}
+
+e := echo.New()
+e.Use(mw)
+```
+
+Reach for the `*WithConfig` variants when you assemble the `Config` programmatically — for example, building it from your own settings struct, sharing one `Config` value across several constructors, or storing it in a field — rather than threading a long list of `With...` options through every call site. `NewWithConfig(cfg)` returns the plain middleware; `NewRecorderWithConfig(cfg)` returns a `*Recorder` for post-construction recorder registration and meter access.
+
 ## Cardinality cheat sheet
 
 Metric cardinality explodes when attributes can take an unbounded number of values. Every distinct combination of attribute values creates a new time series in your metrics backend.

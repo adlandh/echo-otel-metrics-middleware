@@ -80,7 +80,7 @@ The middleware SHALL expose an API that can be installed with Echo v5's middlewa
 - **THEN** the middleware initializes successfully with default metric names, instruments, and attribute behavior
 
 ### Requirement: Middleware behavior is tested and documented
-The project SHALL include tests, godoc examples, and a `README.md` that together demonstrate default metrics, custom configuration, skipped requests, route pattern attributes, error handling, bounded custom attribute extraction, extension panic isolation, and end-to-end OpenTelemetry SDK wiring with a concrete exporter.
+The project SHALL include tests, godoc examples, and a `README.md` that together demonstrate default metrics, custom configuration, skipped requests, route pattern attributes, error handling, bounded custom attribute extraction, extension panic isolation, end-to-end OpenTelemetry SDK wiring with a concrete exporter, and use of the error-returning constructors with explicit error handling.
 
 #### Scenario: Tests validate recorded data
 - **WHEN** tests run with an in-memory OpenTelemetry metric reader
@@ -113,6 +113,14 @@ The project SHALL include tests, godoc examples, and a `README.md` that together
 #### Scenario: Godoc examples back the README recipes
 - **WHEN** users browse the package on `pkg.go.dev`
 - **THEN** they find executable godoc examples for the default installation, custom meter provider wiring, skipper configuration, and bounded custom attribute extraction
+
+#### Scenario: README demonstrates the error-returning constructor
+- **WHEN** users read `README.md` near the constructor-variants reference
+- **THEN** they find a copy-pasteable snippet that calls `New(...)` and handles the returned error explicitly with `if err != nil`, and prose noting when `NewWithConfig`/`NewRecorderWithConfig` with a programmatically built `Config` is preferable to the variadic-options form
+
+#### Scenario: Godoc example backs the error-returning constructor recipe
+- **WHEN** users browse the package on `pkg.go.dev`
+- **THEN** they find an executable `ExampleNew` godoc example that constructs the middleware with `New(...)`, handles the returned error explicitly, and installs the resulting middleware on an Echo instance
 
 ### Requirement: Middleware records custom per-request metrics
 The middleware SHALL allow applications to register zero or more custom metric recorders at initialization through the existing functional-options API. Each registered recorder MUST be invoked exactly once per non-skipped request, after the downstream handler has returned and the final response status is known, with the Echo context, the final status code, the handler error (or nil), the measured request duration, and the same completed-request bounded attribute slice the default completed-request instruments receive for that request.
