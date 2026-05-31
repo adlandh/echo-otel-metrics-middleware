@@ -23,6 +23,24 @@ func ExampleMiddleware() {
 	})
 }
 
+// ExampleNew shows the production-friendly constructor: New returns an error
+// instead of panicking when OpenTelemetry instrument creation fails, so the
+// caller can handle it explicitly rather than crashing on startup.
+func ExampleNew() {
+	mw, err := echotelmetrics.New(echotelmetrics.WithMeterName("com.example.myservice"))
+	if err != nil {
+		// Handle the failure however your service prefers — return it up the
+		// call stack, log and exit, fall back to a no-op, etc.
+		panic(err)
+	}
+
+	e := echo.New()
+	e.Use(mw)
+	e.GET("/users/:id", func(c *echo.Context) error {
+		return c.NoContent(http.StatusOK)
+	})
+}
+
 func ExampleMiddleware_withMeterProvider() {
 	exporter, err := stdoutmetric.New()
 	if err != nil {
