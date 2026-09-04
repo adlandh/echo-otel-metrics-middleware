@@ -1,5 +1,6 @@
 .claude/
 .codex/
+.agents/
 .opencode/
 openspec/changes
 .golangci.yml
