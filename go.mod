@@ -5,7 +5,7 @@ go 1.26
 require (
 	github.com/labstack/echo/v5 v5.3.1
 	go.opentelemetry.io/otel v1.46.0
-	go.opentelemetry.io/otel/exporters/stdout/stdoutmetric v1.45.0
+	go.opentelemetry.io/otel/exporters/stdout/stdoutmetric v1.46.0
 	go.opentelemetry.io/otel/metric v1.46.0
 	go.opentelemetry.io/otel/sdk/metric v1.46.0
 )
